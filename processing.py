@@ -64,9 +64,16 @@ def webhook():
     if not sensor_messages or not isinstance(sensor_messages, list):
         return jsonify({"status": "error", "message": "Missing or invalid field: sensorMessages"}), 400
 
-    conn = get_db_connection()
-    cur = conn.cursor()
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        print("DB connection established successfully")
+    except Exception as e:
+        print(f"ERROR: Failed to connect to database: {e}")
+        return jsonify({"status": "error", "message": "Database connection failed", "detail": str(e)}), 500
+
     inserted = 0
+    failed = 0
 
     for sensor in sensor_messages:
         sensor_name = sensor.get("sensorName", "")
@@ -84,17 +91,31 @@ def webhook():
             print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}")
             continue
 
-        cur.execute(
-            "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
-            (sensor_id, state, message_date)
-        )
-        inserted += 1
+        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}")
+        try:
+            cur.execute(
+                "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
+                (sensor_id, state, message_date)
+            )
+            print(f"Insert succeeded for device_id={sensor_id}")
+            inserted += 1
+        except Exception as e:
+            print(f"ERROR: Insert failed for device_id={sensor_id}: {e}")
+            failed += 1
 
-    conn.commit()
+    try:
+        conn.commit()
+        print(f"Commit succeeded — {inserted} row(s) inserted, {failed} failed")
+    except Exception as e:
+        print(f"ERROR: Commit failed: {e}")
+        cur.close()
+        conn.close()
+        return jsonify({"status": "error", "message": "Database commit failed", "detail": str(e)}), 500
+
     cur.close()
     conn.close()
 
-    return jsonify({"status": "success", "inserted": inserted}), 200
+    return jsonify({"status": "success", "inserted": inserted, "failed": failed}), 200
 
 # ---------------------------------------------------------
 # DASHBOARD ENDPOINT (Dashboard → Railway)
