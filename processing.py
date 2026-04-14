@@ -27,7 +27,9 @@ def init_db():
             id SERIAL PRIMARY KEY,
             device_id INTEGER,
             state TEXT,
-            timestamp TEXT
+            timestamp TEXT,
+            message_guid TEXT,
+            UNIQUE (device_id, timestamp)
         );
     """)
     conn.commit()
@@ -78,26 +80,27 @@ def webhook():
     for sensor in sensor_messages:
         sensor_name = sensor.get("sensorName", "")
 
-        # # Only process dry contact sensors
-        # if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
-        #     continue
+        # Only process dry contact sensors
+        if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
+            continue
 
         sensor_id = sensor.get("sensorID")
         state = sensor.get("state")
         message_date = sensor.get("messageDate")
+        message_guid = sensor.get("dataMessageGUID")
 
-        missing = [f for f, v in {"sensorID": sensor_id, "state": state, "messageDate": message_date}.items() if v is None]
+        missing = [f for f, v in {"sensorID": sensor_id, "state": state, "messageDate": message_date, "dataMessageGUID": message_guid}.items() if v is None]
         if missing:
             print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}")
             continue
 
-        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}")
+        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}, message_guid={message_guid}")
         try:
             cur.execute(
-                "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
-                (sensor_id, state, message_date)
+                "INSERT INTO events (device_id, state, timestamp, message_guid) VALUES (%s, %s, %s, %s)",
+                (sensor_id, state, message_date, message_guid)
             )
-            print(f"Insert succeeded for device_id={sensor_id}")
+            print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}")
             inserted += 1
         except Exception as e:
             print(f"ERROR: Insert failed for device_id={sensor_id}: {e}")
