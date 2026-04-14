@@ -36,6 +36,13 @@ def init_db():
 
 init_db()
 
+# Dry contact sensor name prefixes to accept
+DRY_CONTACT_NAMES = (
+    "Dry Contact - Wrap",
+    "Dry Contact - Air Cooled",
+    "Dry Contact - Water Cooled",
+)
+
 # ---------------------------------------------------------
 # WEBHOOK ENDPOINT (iMonnit → Railway)
 # ---------------------------------------------------------
@@ -48,30 +55,46 @@ def webhook():
 
     print(f"Data Received: {data}")
 
-    device_id = data.get("deviceID")
-    state = data.get("reading")  # "Open" or "Closed"
-    date = data.get("date")
-    time = data.get("time")
+    # Validate top-level structure
+    gateway_message = data.get("gatewayMessage")
+    if not gateway_message:
+        return jsonify({"status": "error", "message": "Missing required field: gatewayMessage"}), 400
 
-    missing = [f for f, v in {"deviceID": device_id, "reading": state, "date": date, "time": time}.items() if v is None]
-    if missing:
-        return jsonify({"status": "error", "message": f"Missing required fields: {', '.join(missing)}"}), 400
-
-    timestamp = f"{date}T{time}"
+    sensor_messages = gateway_message.get("sensorMessages")
+    if not sensor_messages or not isinstance(sensor_messages, list):
+        return jsonify({"status": "error", "message": "Missing or invalid field: sensorMessages"}), 400
 
     conn = get_db_connection()
     cur = conn.cursor()
+    inserted = 0
 
-    cur.execute(
-        "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
-        (device_id, state, timestamp)
-    )
+    for sensor in sensor_messages:
+        sensor_name = sensor.get("sensorName", "")
+
+        # Only process dry contact sensors
+        if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
+            continue
+
+        sensor_id = sensor.get("sensorID")
+        state = sensor.get("state")
+        message_date = sensor.get("messageDate")
+
+        missing = [f for f, v in {"sensorID": sensor_id, "state": state, "messageDate": message_date}.items() if v is None]
+        if missing:
+            print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}")
+            continue
+
+        cur.execute(
+            "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
+            (sensor_id, state, message_date)
+        )
+        inserted += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return jsonify({"status": "success"}), 200
+    return jsonify({"status": "success", "inserted": inserted}), 200
 
 # ---------------------------------------------------------
 # DASHBOARD ENDPOINT (Dashboard → Railway)
