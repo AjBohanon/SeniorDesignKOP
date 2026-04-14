@@ -33,6 +33,7 @@ def init_db():
         );
     """)
     conn.commit()
+    print("Table 'events' verified/created successfully", flush=True)
     cur.close()
     conn.close()
 
@@ -69,9 +70,9 @@ def webhook():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        print("DB connection established successfully")
+        print("DB connection established successfully", flush=True)
     except Exception as e:
-        print(f"ERROR: Failed to connect to database: {e}")
+        print(f"ERROR: Failed to connect to database: {e}", flush=True)
         return jsonify({"status": "error", "message": "Database connection failed", "detail": str(e)}), 500
 
     inserted = 0
@@ -91,26 +92,26 @@ def webhook():
 
         missing = [f for f, v in {"sensorID": sensor_id, "state": state, "messageDate": message_date, "dataMessageGUID": message_guid}.items() if v is None]
         if missing:
-            print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}")
+            print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}", flush=True)
             continue
 
-        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}, message_guid={message_guid}")
+        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}, message_guid={message_guid}", flush=True)
         try:
             cur.execute(
                 "INSERT INTO events (device_id, state, timestamp, message_guid) VALUES (%s, %s, %s, %s)",
                 (sensor_id, state, message_date, message_guid)
             )
-            print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}")
+            print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}", flush=True)
             inserted += 1
         except Exception as e:
-            print(f"ERROR: Insert failed for device_id={sensor_id}: {e}")
+            print(f"ERROR: Insert failed for device_id={sensor_id}: {e}", flush=True)
             failed += 1
 
     try:
         conn.commit()
-        print(f"Commit succeeded — {inserted} row(s) inserted, {failed} failed")
+        print(f"Commit succeeded — {inserted} row(s) inserted, {failed} failed", flush=True)
     except Exception as e:
-        print(f"ERROR: Commit failed: {e}")
+        print(f"ERROR: Commit failed: {e}", flush=True)
         cur.close()
         conn.close()
         return jsonify({"status": "error", "message": "Database commit failed", "detail": str(e)}), 500
