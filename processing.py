@@ -48,30 +48,36 @@ def webhook():
 
     print(f"Data Received: {data}")
 
-    device_id = data.get("deviceID")
-    state = data.get("reading")  # "Open" or "Closed"
-    date = data.get("date")
-    time = data.get("time")
+    sensor_messages = data.get("sensorMessages")
 
-    missing = [f for f, v in {"deviceID": device_id, "reading": state, "date": date, "time": time}.items() if v is None]
-    if missing:
-        return jsonify({"status": "error", "message": f"Missing required fields: {', '.join(missing)}"}), 400
-
-    timestamp = f"{date}T{time}"
+    if not sensor_messages:
+        return jsonify({"status": "error", "message": "Missing required field: sensorMessages"}), 400
 
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
-        (device_id, state, timestamp)
-    )
+    inserted = 0
+    for sensor in sensor_messages:
+        device_id = sensor.get("sensorID")
+        state = sensor.get("state")
+        timestamp = sensor.get("messageDate")
+
+        missing = [f for f, v in {"sensorID": device_id, "state": state, "messageDate": timestamp}.items() if v is None]
+        if missing:
+            print(f"Skipping sensor entry missing fields {', '.join(missing)}: {sensor}")
+            continue
+
+        cur.execute(
+            "INSERT INTO events (device_id, state, timestamp) VALUES (%s, %s, %s)",
+            (device_id, state, timestamp)
+        )
+        inserted += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return jsonify({"status": "success"}), 200
+    return jsonify({"status": "success", "inserted": inserted}), 200
 
 # ---------------------------------------------------------
 # DASHBOARD ENDPOINT (Dashboard → Railway)
