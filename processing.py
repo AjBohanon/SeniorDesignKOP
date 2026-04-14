@@ -50,7 +50,14 @@ def webhook():
 
     device_id = data.get("deviceID")
     state = data.get("reading")  # "Open" or "Closed"
-    timestamp = f"{data.get('date')}T{data.get('time')}"
+    date = data.get("date")
+    time = data.get("time")
+
+    missing = [f for f, v in {"deviceID": device_id, "reading": state, "date": date, "time": time}.items() if v is None]
+    if missing:
+        return jsonify({"status": "error", "message": f"Missing required fields: {', '.join(missing)}"}), 400
+
+    timestamp = f"{date}T{time}"
 
     conn = get_db_connection()
     cur = conn.cursor()
