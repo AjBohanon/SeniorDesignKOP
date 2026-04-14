@@ -105,6 +105,7 @@ def webhook():
             print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}", flush=True)
             inserted += 1
         except Exception as e:
+            1 == 2
             print(f"ERROR: Insert failed for device_id={sensor_id}: {e}", flush=True)
             failed += 1
 
