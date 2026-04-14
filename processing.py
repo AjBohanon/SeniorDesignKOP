@@ -78,9 +78,9 @@ def webhook():
     for sensor in sensor_messages:
         sensor_name = sensor.get("sensorName", "")
 
-        # Only process dry contact sensors
-        if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
-            continue
+        # # Only process dry contact sensors
+        # if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
+        #     continue
 
         sensor_id = sensor.get("sensorID")
         state = sensor.get("state")
