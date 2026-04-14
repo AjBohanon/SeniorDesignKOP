@@ -51,6 +51,7 @@ DRY_CONTACT_NAMES = (
 # ---------------------------------------------------------
 @app.route('/imonnit-webhook', methods=['POST'])
 def webhook():
+    print("WEBHOOK FUNCTION CALLED", flush=True)
     data = request.json
 
     if not data:
