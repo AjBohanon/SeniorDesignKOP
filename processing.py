@@ -23,7 +23,7 @@ REQUIRED_DRY_CONTACT_FIELDS = (
     "dataValue",
 )
 
-RETENTION_DAYS = 7
+RETAINED_PRODUCTION_DAYS = 8
 PARTITION_PREFIX = "events_p_"
 PRODUCTION_START_TIME = time(7, 0, 0)
 PRODUCTION_END_TIME = time(18, 0, 0)
@@ -109,6 +109,22 @@ def is_production_window(timestamp_value):
     if timestamp_value.weekday() not in PRODUCTION_WEEKDAYS:
         return False
     return PRODUCTION_START_TIME <= timestamp_value.time() <= PRODUCTION_END_TIME
+
+
+def is_production_date(date_value):
+    return date_value.weekday() in PRODUCTION_WEEKDAYS
+
+
+def recent_production_dates(reference_date, count=RETAINED_PRODUCTION_DAYS):
+    dates = []
+    current = reference_date
+
+    while len(dates) < count:
+        if is_production_date(current):
+            dates.append(current)
+        current -= timedelta(days=1)
+
+    return dates
 
 
 def partition_table_name(event_date):
@@ -246,8 +262,8 @@ def ensure_partition_for_date(cur, event_date):
     )
 
 
-def drop_expired_partitions(cur, keep_days=RETENTION_DAYS):
-    cutoff_date = datetime.now().date() - timedelta(days=keep_days - 1)
+def drop_expired_partitions(cur, keep_dates):
+    keep_date_set = set(keep_dates)
 
     cur.execute(
         """
@@ -271,7 +287,7 @@ def drop_expired_partitions(cur, keep_days=RETENTION_DAYS):
         except ValueError:
             continue
 
-        if partition_date < cutoff_date:
+        if partition_date not in keep_date_set:
             cur.execute(f"DROP TABLE IF EXISTS {partition_name};")
 
 
@@ -283,10 +299,11 @@ def init_db():
     ensure_events_parent_table(cur)
 
     today = datetime.now().date()
-    for offset in range(RETENTION_DAYS):
-        ensure_partition_for_date(cur, today - timedelta(days=offset))
+    keep_dates = recent_production_dates(today)
+    for production_date in keep_dates:
+        ensure_partition_for_date(cur, production_date)
 
-    drop_expired_partitions(cur)
+    drop_expired_partitions(cur, keep_dates)
 
     conn.commit()
     print("Partitioned 'events' table verified/created successfully", flush=True)
@@ -405,7 +422,8 @@ def webhook():
 
         try:
             ensure_partition_for_date(cur, event_date)
-            drop_expired_partitions(cur)
+            reference_date = max(datetime.now().date(), event_date)
+            drop_expired_partitions(cur, recent_production_dates(reference_date))
             cur.execute(
                 """
                 INSERT INTO events (device_id, sensor_name, state, timestamp, event_date, message_guid)
