@@ -1,9 +1,12 @@
 from flask import Flask, request, jsonify
 import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
+LOCAL_TIMEZONE = ZoneInfo("America/New_York")
 
 
 DRY_CONTACT_NAMES = (
@@ -85,6 +88,19 @@ def classify_sensor(sensor):
     return {"status": "processed", "state": state}
 
 
+def parse_message_timestamp(raw_timestamp):
+    if is_blank(raw_timestamp):
+        return None
+
+    try:
+        parsed = datetime.strptime(raw_timestamp, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+    # iMonnit timestamps are treated as UTC, then converted to local Eastern time.
+    return parsed.replace(tzinfo=timezone.utc).astimezone(LOCAL_TIMEZONE)
+
+
 # Create table if not exists
 def init_db():
     conn = get_db_connection()
@@ -97,7 +113,7 @@ def init_db():
             device_id    INTEGER,
             sensor_name  TEXT,
             state        TEXT,
-            timestamp    TEXT,
+            timestamp    TIMESTAMP,
             message_guid TEXT
         );
     """
@@ -105,6 +121,16 @@ def init_db():
 
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS message_guid TEXT;")
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS sensor_name TEXT;")
+    cur.execute(
+        """
+        ALTER TABLE events
+        ALTER COLUMN timestamp TYPE TIMESTAMP
+        USING CASE
+            WHEN timestamp IS NULL THEN NULL
+            ELSE timezone('America/New_York', timestamp::timestamptz)
+        END;
+    """
+    )
 
     cur.execute(
         """
@@ -122,11 +148,12 @@ def init_db():
     """
     )
 
+    # Replace the older partial index so ON CONFLICT can match the message_guid key.
+    cur.execute("DROP INDEX IF EXISTS events_message_guid_key;")
     cur.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS events_message_guid_key
-        ON events (message_guid)
-        WHERE message_guid IS NOT NULL AND message_guid <> '';
+        ON events (message_guid);
     """
     )
 
@@ -214,11 +241,21 @@ def webhook():
         message_date = sensor.get("messageDate")
         message_guid = sensor.get("dataMessageGUID")
         state = classification["state"]
+        parsed_timestamp = parse_message_timestamp(message_date)
+
+        if parsed_timestamp is None:
+            counts["invalid"] += 1
+            counts["processed"] -= 1
+            print(
+                f"INVALID: sensorName='{sensor_name}' reason=unexpected messageDate '{message_date}'",
+                flush=True,
+            )
+            continue
 
         print(
             "PROCESSED: "
             f"sensorName='{sensor_name}', message_guid='{message_guid}', "
-            f"state='{state}', timestamp='{message_date}'",
+            f"state='{state}', timestamp='{parsed_timestamp.isoformat()}'",
             flush=True,
         )
 
@@ -227,9 +264,9 @@ def webhook():
                 """
                 INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (message_guid) WHERE message_guid IS NOT NULL DO NOTHING
+                ON CONFLICT DO NOTHING
                 """,
-                (sensor_id, sensor_name, state, message_date, message_guid),
+                (sensor_id, sensor_name, state, parsed_timestamp.replace(tzinfo=None), message_guid),
             )
 
             if cur.rowcount == 1:
@@ -241,48 +278,18 @@ def webhook():
             else:
                 counts["duplicate"] += 1
                 print(
-                    f"DUPLICATE: sensorName='{sensor_name}', message_guid='{message_guid}'",
+                    "DUPLICATE: "
+                    f"sensorName='{sensor_name}', message_guid='{message_guid}', timestamp='{parsed_timestamp.isoformat()}'",
                     flush=True,
                 )
-        except Exception as guid_error:
+        except Exception as insert_error:
+            counts["failed"] += 1
             print(
-                f"GUID INSERT ERROR: sensorName='{sensor_name}', error={type(guid_error).__name__}: {guid_error}",
+                f"FAILED: sensorName='{sensor_name}', error={type(insert_error).__name__}: {insert_error}",
                 flush=True,
             )
-            try:
-                conn.rollback()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (device_id, sensor_name, timestamp) DO NOTHING
-                    """,
-                    (sensor_id, sensor_name, state, message_date, message_guid),
-                )
-
-                if cur.rowcount == 1:
-                    counts["inserted"] += 1
-                    print(
-                        "INSERTED_FALLBACK: "
-                        f"sensorName='{sensor_name}', timestamp='{message_date}'",
-                        flush=True,
-                    )
-                else:
-                    counts["duplicate"] += 1
-                    print(
-                        "DUPLICATE_FALLBACK: "
-                        f"sensorName='{sensor_name}', timestamp='{message_date}'",
-                        flush=True,
-                    )
-            except Exception as insert_error:
-                counts["failed"] += 1
-                print(
-                    f"FAILED: sensorName='{sensor_name}', error={type(insert_error).__name__}: {insert_error}",
-                    flush=True,
-                )
-                conn.rollback()
-                cur = conn.cursor()
+            conn.rollback()
+            cur = conn.cursor()
 
     print(f"Loop complete: {counts}", flush=True)
 
@@ -331,6 +338,9 @@ def latest():
     )
 
     rows = cur.fetchall()
+    for row in rows:
+        if row.get("timestamp") is not None:
+            row["timestamp"] = row["timestamp"].isoformat()
 
     cur.close()
     conn.close()
