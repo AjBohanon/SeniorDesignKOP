@@ -189,10 +189,9 @@ def migrate_legacy_events(cur):
 
     cur.execute(
         """
-        SELECT DISTINCT TO_DATE(SPLIT_PART(timestamp, ' ', 1), 'YYYY-MM-DD') AS event_date
+        SELECT DISTINCT CAST(NULLIF(BTRIM(timestamp::text), '') AS timestamp)::date AS event_date
         FROM events_legacy
-        WHERE timestamp IS NOT NULL
-          AND timestamp <> '';
+        WHERE NULLIF(BTRIM(timestamp::text), '') IS NOT NULL;
         """
     )
     for row in cur.fetchall():
@@ -206,12 +205,11 @@ def migrate_legacy_events(cur):
             device_id,
             sensor_name,
             state,
-            timestamp::timestamp,
-            TO_DATE(SPLIT_PART(timestamp, ' ', 1), 'YYYY-MM-DD'),
+            CAST(NULLIF(BTRIM(timestamp::text), '') AS timestamp),
+            CAST(NULLIF(BTRIM(timestamp::text), '') AS timestamp)::date,
             message_guid
         FROM events_legacy
-        WHERE timestamp IS NOT NULL
-          AND timestamp <> ''
+        WHERE NULLIF(BTRIM(timestamp::text), '') IS NOT NULL
         ON CONFLICT DO NOTHING;
         """
     )
