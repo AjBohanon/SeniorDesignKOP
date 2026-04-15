@@ -32,6 +32,10 @@ def init_db():
             UNIQUE (device_id, timestamp)
         );
     """)
+    # Add message_guid column if it doesn't exist (handles existing tables)
+    cur.execute("""
+        ALTER TABLE events ADD COLUMN IF NOT EXISTS message_guid TEXT;
+    """)
     conn.commit()
     print("Table 'events' verified/created successfully", flush=True)
     cur.close()
