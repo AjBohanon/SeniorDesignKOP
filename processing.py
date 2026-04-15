@@ -131,23 +131,45 @@ def partition_table_name(event_date):
     return f"{PARTITION_PREFIX}{event_date.strftime('%Y%m%d')}"
 
 
-def ensure_events_parent_table(cur):
+def get_events_table_info(cur):
     cur.execute(
         """
-        SELECT c.relkind, pt.partstrat
+        SELECT c.relname, c.relkind, pt.partstrat
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         LEFT JOIN pg_partitioned_table pt ON pt.partrelid = c.oid
         WHERE n.nspname = current_schema() AND c.relname = 'events';
         """
     )
-    info = cur.fetchone()
+    return cur.fetchone()
+
+
+def list_event_partitions(cur):
+    cur.execute(
+        """
+        SELECT c.relname AS partition_name
+        FROM pg_inherits i
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE p.relname = 'events'
+          AND n.nspname = current_schema()
+        ORDER BY c.relname;
+        """
+    )
+    return [row["partition_name"] for row in cur.fetchall()]
+
+
+def ensure_events_parent_table(cur):
+    info = get_events_table_info(cur)
+    print(f"EVENTS_TABLE_BEFORE: {info}", flush=True)
 
     if info and info["relkind"] == "p":
         return
 
     if info:
         cur.execute("ALTER TABLE events RENAME TO events_legacy;")
+        print("EVENTS_TABLE_RENAMED_TO_LEGACY", flush=True)
 
     cur.execute(
         """
@@ -186,6 +208,13 @@ def ensure_events_parent_table(cur):
 
     if info:
         migrate_legacy_events(cur)
+
+    info_after = get_events_table_info(cur)
+    print(f"EVENTS_TABLE_AFTER: {info_after}", flush=True)
+    if not info_after or info_after["relkind"] != "p":
+        raise RuntimeError(
+            f"events table migration failed: expected partitioned table, found {info_after}"
+        )
 
 
 def migrate_legacy_events(cur):
@@ -296,14 +325,20 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
+    cur.execute("SELECT current_database() AS db_name, current_schema() AS schema_name;")
+    db_context = cur.fetchone()
+    print(f"DB_CONTEXT: {db_context}", flush=True)
+
     ensure_events_parent_table(cur)
 
     today = datetime.now().date()
     keep_dates = recent_production_dates(today)
+    print(f"TARGET_PRODUCTION_DATES: {[d.isoformat() for d in keep_dates]}", flush=True)
     for production_date in keep_dates:
         ensure_partition_for_date(cur, production_date)
 
     drop_expired_partitions(cur, keep_dates)
+    print(f"EVENT_PARTITIONS_AFTER_INIT: {list_event_partitions(cur)}", flush=True)
 
     conn.commit()
     print("Partitioned 'events' table verified/created successfully", flush=True)
