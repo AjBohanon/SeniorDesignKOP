@@ -33,7 +33,7 @@ def init_db():
             state        TEXT,
             timestamp    TEXT,
             message_guid TEXT,
-            UNIQUE (device_id, timestamp)
+            UNIQUE (device_id, sensor_name, timestamp)
         );
     """)
 
@@ -48,11 +48,11 @@ def init_db():
         BEGIN
             IF NOT EXISTS (
                 SELECT 1 FROM pg_constraint
-                WHERE conname = 'events_device_id_timestamp_key'
+                WHERE conname = 'events_device_id_sensor_name_timestamp_key'
             ) THEN
                 ALTER TABLE events
-                ADD CONSTRAINT events_device_id_timestamp_key
-                UNIQUE (device_id, timestamp);
+                ADD CONSTRAINT events_device_id_sensor_name_timestamp_key
+                UNIQUE (device_id, sensor_name, timestamp);
             END IF;
         END$$;
     """)
@@ -136,7 +136,7 @@ def webhook():
             cur.execute(
                 """INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
                    VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (device_id, timestamp) DO NOTHING""",
+                   ON CONFLICT (device_id, sensor_name, timestamp) DO NOTHING""",
                 (sensor_id, sensor_name, state, message_date, message_guid)
             )
             print(f"Insert succeeded — sensor='{sensor_name}', device_id={sensor_id}, state={state}", flush=True)
