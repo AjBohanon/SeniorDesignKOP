@@ -99,9 +99,11 @@ def webhook():
         print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}, message_guid={message_guid}", flush=True)
         try:
             cur.execute(
-                "INSERT INTO events (device_id, state, timestamp, message_guid) VALUES (%s, %s, %s, %s)",
-                (sensor_id, state, message_date, message_guid)
-            )
+    """INSERT INTO events (device_id, state, timestamp, message_guid) 
+       VALUES (%s, %s, %s, %s)
+       ON CONFLICT (device_id, timestamp) DO NOTHING""",
+    (sensor_id, state, message_date, message_guid)
+)
             print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}", flush=True)
             inserted += 1
         except Exception as e:
