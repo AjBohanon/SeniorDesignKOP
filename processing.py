@@ -22,20 +22,41 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
+
+    # Create table with correct schema if it doesn't exist
+    # Matches the manually created table that confirmed working insertions
     cur.execute("""
         CREATE TABLE IF NOT EXISTS events (
-            id SERIAL PRIMARY KEY,
-            device_id INTEGER,
-            state TEXT,
-            timestamp TEXT,
+            id           SERIAL PRIMARY KEY,
+            device_id    INTEGER,
+            sensor_name  TEXT,
+            state        TEXT,
+            timestamp    TEXT,
             message_guid TEXT,
             UNIQUE (device_id, timestamp)
         );
     """)
-    # Add message_guid column if it doesn't exist (handles existing tables)
+
+    # Safely add any columns that may be missing on older table versions
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS message_guid TEXT;")
+    cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS sensor_name TEXT;")
+
+    # Add unique constraint if it doesn't already exist
+    # This is what enables ON CONFLICT DO NOTHING to work
     cur.execute("""
-        ALTER TABLE events ADD COLUMN IF NOT EXISTS message_guid TEXT;
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'events_device_id_timestamp_key'
+            ) THEN
+                ALTER TABLE events
+                ADD CONSTRAINT events_device_id_timestamp_key
+                UNIQUE (device_id, timestamp);
+            END IF;
+        END$$;
     """)
+
     conn.commit()
     print("Table 'events' verified/created successfully", flush=True)
     cur.close()
@@ -61,7 +82,7 @@ def webhook():
     if not data:
         return jsonify({"status": "error", "message": "No data"}), 400
 
-    print(f"Data Received: {data}")
+    print(f"Data Received: {data}", flush=True)
 
     # Validate top-level structure
     gateway_message = data.get("gatewayMessage")
@@ -88,27 +109,37 @@ def webhook():
 
         # Only process dry contact sensors
         if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
+            print(f"Skipping non-dry-contact sensor: '{sensor_name}'", flush=True)
             continue
 
-        sensor_id = sensor.get("sensorID")
-        state = sensor.get("state")
+        sensor_id    = sensor.get("sensorID")
         message_date = sensor.get("messageDate")
         message_guid = sensor.get("dataMessageGUID")
 
-        missing = [f for f, v in {"sensorID": sensor_id, "state": state, "messageDate": message_date, "dataMessageGUID": message_guid}.items() if v is None]
+        # ── FIX: parse state from dataValue (True/False) not state (0/2) ──
+        raw_state = sensor.get("dataValue", "False")
+        state = "Closed" if raw_state == "True" else "Open"
+
+        missing = [f for f, v in {
+            "sensorID":        sensor_id,
+            "messageDate":     message_date,
+            "dataMessageGUID": message_guid,
+        }.items() if v is None]
+
         if missing:
             print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}", flush=True)
             continue
 
-        print(f"Attempting insert — device_id={sensor_id}, state={state}, message_date={message_date}, message_guid={message_guid}", flush=True)
+        print(f"Attempting insert — sensor='{sensor_name}', device_id={sensor_id}, state={state}, timestamp={message_date}, guid={message_guid}", flush=True)
+
         try:
             cur.execute(
-    """INSERT INTO events (device_id, state, timestamp, message_guid) 
-       VALUES (%s, %s, %s, %s)
-       ON CONFLICT (device_id, timestamp) DO NOTHING""",
-    (sensor_id, state, message_date, message_guid)
-)
-            print(f"Insert succeeded for device_id={sensor_id}, message_guid={message_guid}", flush=True)
+                """INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (device_id, timestamp) DO NOTHING""",
+                (sensor_id, sensor_name, state, message_date, message_guid)
+            )
+            print(f"Insert succeeded — sensor='{sensor_name}', device_id={sensor_id}, state={state}", flush=True)
             inserted += 1
         except Exception as e:
             print(f"ERROR: Insert failed for device_id={sensor_id}: {type(e).__name__}: {e}", flush=True)
@@ -128,6 +159,7 @@ def webhook():
 
     return jsonify({"status": "success", "inserted": inserted, "failed": failed}), 200
 
+
 # ---------------------------------------------------------
 # DASHBOARD ENDPOINT (Dashboard → Railway)
 # Returns the most recent 50 events
@@ -138,7 +170,7 @@ def latest():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT device_id, state, timestamp
+        SELECT device_id, sensor_name, state, timestamp
         FROM events
         ORDER BY id DESC
         LIMIT 50;
