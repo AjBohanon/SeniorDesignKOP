@@ -5,6 +5,23 @@ from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 
+
+DRY_CONTACT_NAMES = (
+    "Dry Contact - Wrap",
+    "Dry Contact - Air Cooled",
+    "Dry Contact - Water Cooled",
+)
+
+REQUIRED_DRY_CONTACT_FIELDS = (
+    "sensorID",
+    "sensorName",
+    "messageDate",
+    "dataMessageGUID",
+    "dataType",
+    "dataValue",
+)
+
+
 # ---------------------------------------------------------
 # POSTGRES CONNECTION (Railway Environment Variables)
 # ---------------------------------------------------------
@@ -15,35 +32,82 @@ def get_db_connection():
         user=os.environ.get("PGUSER"),
         password=os.environ.get("PGPASSWORD"),
         port=os.environ.get("PGPORT"),
-        cursor_factory=RealDictCursor
+        cursor_factory=RealDictCursor,
     )
+
+
+def is_blank(value):
+    return value is None or (isinstance(value, str) and value.strip() == "")
+
+
+def is_dry_contact_sensor(sensor_name):
+    return any(sensor_name == name for name in DRY_CONTACT_NAMES)
+
+
+def parse_dry_contact_state(raw_state):
+    if raw_state == "True":
+        return "Closed"
+    if raw_state == "False":
+        return "Open"
+    return None
+
+
+def classify_sensor(sensor):
+    sensor_name = sensor.get("sensorName", "")
+    data_type = sensor.get("dataType")
+
+    if not is_dry_contact_sensor(sensor_name):
+        return {
+            "status": "skipped",
+            "reason": f"sensor '{sensor_name}' is not one of the configured dry contact sensors",
+        }
+
+    missing = [field for field in REQUIRED_DRY_CONTACT_FIELDS if is_blank(sensor.get(field))]
+    if missing:
+        return {
+            "status": "invalid",
+            "reason": f"missing required fields: {', '.join(missing)}",
+        }
+
+    if data_type != "DryContact":
+        return {
+            "status": "invalid",
+            "reason": f"unexpected dataType '{data_type}'",
+        }
+
+    state = parse_dry_contact_state(sensor.get("dataValue"))
+    if state is None:
+        return {
+            "status": "invalid",
+            "reason": f"unexpected dataValue '{sensor.get('dataValue')}'",
+        }
+
+    return {"status": "processed", "state": state}
+
 
 # Create table if not exists
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # Create table with correct schema if it doesn't exist
-    # Matches the manually created table that confirmed working insertions
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS events (
             id           SERIAL PRIMARY KEY,
             device_id    INTEGER,
             sensor_name  TEXT,
             state        TEXT,
             timestamp    TEXT,
-            message_guid TEXT,
-            UNIQUE (device_id, sensor_name, timestamp)
+            message_guid TEXT
         );
-    """)
+    """
+    )
 
-    # Safely add any columns that may be missing on older table versions
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS message_guid TEXT;")
     cur.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS sensor_name TEXT;")
 
-    # Add unique constraint if it doesn't already exist
-    # This is what enables ON CONFLICT DO NOTHING to work
-    cur.execute("""
+    cur.execute(
+        """
         DO $$
         BEGIN
             IF NOT EXISTS (
@@ -55,135 +119,216 @@ def init_db():
                 UNIQUE (device_id, sensor_name, timestamp);
             END IF;
         END$$;
-    """)
+    """
+    )
+
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS events_message_guid_key
+        ON events (message_guid)
+        WHERE message_guid IS NOT NULL AND message_guid <> '';
+    """
+    )
 
     conn.commit()
     print("Table 'events' verified/created successfully", flush=True)
     cur.close()
     conn.close()
 
+
 init_db()
 
-# Dry contact sensor name prefixes to accept
-DRY_CONTACT_NAMES = (
-    "Dry Contact - Wrap",
-    "Dry Contact - Air Cooled",
-    "Dry Contact - Water Cooled",
-)
 
 # ---------------------------------------------------------
-# WEBHOOK ENDPOINT (iMonnit → Railway)
+# WEBHOOK ENDPOINT (iMonnit -> Railway)
 # ---------------------------------------------------------
-@app.route('/imonnit-webhook', methods=['POST'])
+@app.route("/imonnit-webhook", methods=["POST"])
 def webhook():
     print("WEBHOOK FUNCTION CALLED", flush=True)
-    data = request.json
+    data = request.get_json(silent=True)
 
     if not data:
         return jsonify({"status": "error", "message": "No data"}), 400
 
     print(f"Data Received: {data}", flush=True)
 
-    # Validate top-level structure
     gateway_message = data.get("gatewayMessage")
-    if not gateway_message:
+    if not isinstance(gateway_message, dict):
+        print("PAYLOAD INVALID: missing or invalid gatewayMessage", flush=True)
         return jsonify({"status": "error", "message": "Missing required field: gatewayMessage"}), 400
 
-    sensor_messages = gateway_message.get("sensorMessages")
-    if not sensor_messages or not isinstance(sensor_messages, list):
+    sensor_messages = data.get("sensorMessages")
+    if not isinstance(sensor_messages, list):
+        print("PAYLOAD INVALID: missing or invalid top-level sensorMessages", flush=True)
         return jsonify({"status": "error", "message": "Missing or invalid field: sensorMessages"}), 400
 
-    print(f"Gateway message validated, processing {len(sensor_messages)} sensors", flush=True)
+    print(
+        f"Payload validated: gatewayID={gateway_message.get('gatewayID')}, sensor_count={len(sensor_messages)}",
+        flush=True,
+    )
+    print("About to establish database connection", flush=True)
 
-    print(f"About to establish database connection", flush=True)
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         print("DB connection established successfully", flush=True)
     except Exception as e:
         print(f"ERROR: Failed to connect to database: {e}", flush=True)
-        return jsonify({"status": "error", "message": "Database connection failed", "detail": str(e)}), 500
+        return jsonify(
+            {"status": "error", "message": "Database connection failed", "detail": str(e)}
+        ), 500
 
-    inserted = 0
-    failed = 0
+    counts = {
+        "processed": 0,
+        "skipped": 0,
+        "invalid": 0,
+        "inserted": 0,
+        "duplicate": 0,
+        "failed": 0,
+    }
 
-    for sensor in sensor_messages:
+    for index, sensor in enumerate(sensor_messages, start=1):
         sensor_name = sensor.get("sensorName", "")
+        sensor_id = sensor.get("sensorID")
+        print(
+            f"Processing sensor {index}: sensorName='{sensor_name}', sensorID={sensor_id}",
+            flush=True,
+        )
 
-        print(f"Processing sensor {sensor_messages.index(sensor) + 1}: sensorName='{sensor_name}', sensorID={sensor.get('sensorID')}", flush=True)
+        classification = classify_sensor(sensor)
+        status = classification["status"]
+        reason = classification.get("reason")
 
-        # Only process dry contact sensors
-        if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
-            print(f"SKIPPED: '{sensor_name}' is not a dry contact sensor", flush=True)
+        if status == "skipped":
+            counts["skipped"] += 1
+            print(f"SKIPPED: sensorName='{sensor_name}' reason={reason}", flush=True)
             continue
 
-        print(f"PASSED FILTER: '{sensor_name}' is a dry contact sensor, proceeding with insert", flush=True)
+        if status == "invalid":
+            counts["invalid"] += 1
+            print(f"INVALID: sensorName='{sensor_name}' reason={reason}", flush=True)
+            continue
 
-        sensor_id    = sensor.get("sensorID")
+        counts["processed"] += 1
+
         message_date = sensor.get("messageDate")
         message_guid = sensor.get("dataMessageGUID")
+        state = classification["state"]
 
-        # ── FIX: parse state from dataValue (True/False) not state (0/2) ──
-        raw_state = sensor.get("dataValue", "False")
-        state = "Closed" if raw_state == "True" else "Open"
-
-        missing = [f for f, v in {
-            "sensorID":        sensor_id,
-            "messageDate":     message_date,
-            "dataMessageGUID": message_guid,
-        }.items() if v is None]
-
-        if missing:
-            print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}", flush=True)
-            continue
-
-        print(f"INSERTING: device_id={sensor_id}, sensor_name='{sensor_name}', state='{state}', timestamp='{message_date}', guid='{message_guid}'", flush=True)
+        print(
+            "PROCESSED: "
+            f"sensorName='{sensor_name}', message_guid='{message_guid}', "
+            f"state='{state}', timestamp='{message_date}'",
+            flush=True,
+        )
 
         try:
             cur.execute(
-                """INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
-                   VALUES (%s, %s, %s, %s, %s)
-                   ON CONFLICT (device_id, sensor_name, timestamp) DO NOTHING""",
-                (sensor_id, sensor_name, state, message_date, message_guid)
+                """
+                INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (message_guid) WHERE message_guid IS NOT NULL DO NOTHING
+                """,
+                (sensor_id, sensor_name, state, message_date, message_guid),
             )
-            print(f"SUCCESS: Row inserted for {sensor_name}", flush=True)
-            inserted += 1
-        except Exception as e:
-            print(f"ERROR: Insert failed for device_id={sensor_id}: {type(e).__name__}: {e}", flush=True)
-            failed += 1
 
-    print(f"Loop complete: {inserted} inserted, {failed} failed", flush=True)
+            if cur.rowcount == 1:
+                counts["inserted"] += 1
+                print(
+                    f"INSERTED: sensorName='{sensor_name}', message_guid='{message_guid}'",
+                    flush=True,
+                )
+            else:
+                counts["duplicate"] += 1
+                print(
+                    f"DUPLICATE: sensorName='{sensor_name}', message_guid='{message_guid}'",
+                    flush=True,
+                )
+        except Exception as guid_error:
+            print(
+                f"GUID INSERT ERROR: sensorName='{sensor_name}', error={type(guid_error).__name__}: {guid_error}",
+                flush=True,
+            )
+            try:
+                conn.rollback()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO events (device_id, sensor_name, state, timestamp, message_guid)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (device_id, sensor_name, timestamp) DO NOTHING
+                    """,
+                    (sensor_id, sensor_name, state, message_date, message_guid),
+                )
+
+                if cur.rowcount == 1:
+                    counts["inserted"] += 1
+                    print(
+                        "INSERTED_FALLBACK: "
+                        f"sensorName='{sensor_name}', timestamp='{message_date}'",
+                        flush=True,
+                    )
+                else:
+                    counts["duplicate"] += 1
+                    print(
+                        "DUPLICATE_FALLBACK: "
+                        f"sensorName='{sensor_name}', timestamp='{message_date}'",
+                        flush=True,
+                    )
+            except Exception as insert_error:
+                counts["failed"] += 1
+                print(
+                    f"FAILED: sensorName='{sensor_name}', error={type(insert_error).__name__}: {insert_error}",
+                    flush=True,
+                )
+                conn.rollback()
+                cur = conn.cursor()
+
+    print(f"Loop complete: {counts}", flush=True)
 
     try:
         conn.commit()
-        print(f"Commit succeeded — {inserted} row(s) inserted, {failed} failed", flush=True)
+        print(f"Commit succeeded: {counts}", flush=True)
     except Exception as e:
         print(f"ERROR: Commit failed: {e}", flush=True)
         cur.close()
         conn.close()
-        return jsonify({"status": "error", "message": "Database commit failed", "detail": str(e)}), 500
+        return jsonify(
+            {"status": "error", "message": "Database commit failed", "detail": str(e)}
+        ), 500
 
     cur.close()
     conn.close()
 
-    return jsonify({"status": "success", "inserted": inserted, "failed": failed}), 200
+    return (
+        jsonify(
+            {
+                "status": "success",
+                "message": "Webhook processed",
+                "counts": counts,
+            }
+        ),
+        200,
+    )
 
 
 # ---------------------------------------------------------
-# DASHBOARD ENDPOINT (Dashboard → Railway)
+# DASHBOARD ENDPOINT (Dashboard -> Railway)
 # Returns the most recent 50 events
 # ---------------------------------------------------------
-@app.route('/latest', methods=['GET'])
+@app.route("/latest", methods=["GET"])
 def latest():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute("""
-        SELECT device_id, sensor_name, state, timestamp
+    cur.execute(
+        """
+        SELECT device_id, sensor_name, state, timestamp, message_guid
         FROM events
         ORDER BY id DESC
         LIMIT 50;
-    """)
+    """
+    )
 
     rows = cur.fetchall()
 
