@@ -93,6 +93,9 @@ def webhook():
     if not sensor_messages or not isinstance(sensor_messages, list):
         return jsonify({"status": "error", "message": "Missing or invalid field: sensorMessages"}), 400
 
+    print(f"Gateway message validated, processing {len(sensor_messages)} sensors", flush=True)
+
+    print(f"About to establish database connection", flush=True)
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -107,10 +110,14 @@ def webhook():
     for sensor in sensor_messages:
         sensor_name = sensor.get("sensorName", "")
 
+        print(f"Processing sensor {sensor_messages.index(sensor) + 1}: sensorName='{sensor_name}', sensorID={sensor.get('sensorID')}", flush=True)
+
         # Only process dry contact sensors
         if not any(sensor_name.startswith(name) for name in DRY_CONTACT_NAMES):
-            print(f"Skipping non-dry-contact sensor: '{sensor_name}'", flush=True)
+            print(f"SKIPPED: '{sensor_name}' is not a dry contact sensor", flush=True)
             continue
+
+        print(f"PASSED FILTER: '{sensor_name}' is a dry contact sensor, proceeding with insert", flush=True)
 
         sensor_id    = sensor.get("sensorID")
         message_date = sensor.get("messageDate")
@@ -130,7 +137,7 @@ def webhook():
             print(f"Skipping sensor '{sensor_name}': missing fields {', '.join(missing)}", flush=True)
             continue
 
-        print(f"Attempting insert — sensor='{sensor_name}', device_id={sensor_id}, state={state}, timestamp={message_date}, guid={message_guid}", flush=True)
+        print(f"INSERTING: device_id={sensor_id}, sensor_name='{sensor_name}', state='{state}', timestamp='{message_date}', guid='{message_guid}'", flush=True)
 
         try:
             cur.execute(
@@ -139,11 +146,13 @@ def webhook():
                    ON CONFLICT (device_id, sensor_name, timestamp) DO NOTHING""",
                 (sensor_id, sensor_name, state, message_date, message_guid)
             )
-            print(f"Insert succeeded — sensor='{sensor_name}', device_id={sensor_id}, state={state}", flush=True)
+            print(f"SUCCESS: Row inserted for {sensor_name}", flush=True)
             inserted += 1
         except Exception as e:
             print(f"ERROR: Insert failed for device_id={sensor_id}: {type(e).__name__}: {e}", flush=True)
             failed += 1
+
+    print(f"Loop complete: {inserted} inserted, {failed} failed", flush=True)
 
     try:
         conn.commit()
