@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 from datetime import datetime, timedelta, time
-
+from datetime import datetime, timezone, timedelta
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -29,7 +29,18 @@ PRODUCTION_START_TIME = time(7, 0, 0)
 PRODUCTION_END_TIME = time(22, 0, 0)
 PRODUCTION_WEEKDAYS = {0, 1, 2, 3}  # Monday-Thursday
 
+#convert to EST 
 
+def to_est(utc_str):
+    """Convert UTC timestamp string from Monnit to EST/EDT."""
+    try:
+        dt = datetime.strptime(utc_str, "%Y-%m-%d %H:%M:%S")
+        dt = dt.replace(tzinfo=timezone.utc)
+        et_offset = timedelta(hours=-4)  # EDT (summer), change to -5 for EST (winter)
+        return (dt + et_offset).strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return utc_str  # return original if conversion fails
+        
 # ---------------------------------------------------------
 # POSTGRES CONNECTION (Railway Environment Variables)
 # ---------------------------------------------------------
@@ -422,7 +433,7 @@ def webhook():
 
         counts["processed"] += 1
 
-        message_date = sensor.get("messageDate")
+        message_date = to_est(sensor.get("messageDate", ""))
         message_guid = sensor.get("dataMessageGUID")
         state = classification["state"]
         parsed_timestamp = parse_message_timestamp(message_date)
