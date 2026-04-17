@@ -94,7 +94,7 @@ def classify_sensor(sensor):
             "reason": f"missing required fields: {', '.join(missing)}",
         }
 
-    if data_type != "DryContact" and data_type != "TemperatureData":
+    if data_type != "DryContact":
         return {
             "status": "invalid",
             "reason": f"unexpected dataType '{data_type}'",
