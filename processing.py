@@ -72,7 +72,9 @@ def parse_dry_contact_state(raw_state):
         return "Closed"
     if raw_state == "False":
         return "Open"
-    return None
+    if type(raw_state) == float:
+        return raw_state
+    return none
 
 
 def classify_sensor(sensor):
@@ -92,7 +94,7 @@ def classify_sensor(sensor):
             "reason": f"missing required fields: {', '.join(missing)}",
         }
 
-    if data_type != "DryContact":
+    if data_type != "DryContact" and data_type != "TemperatureData":
         return {
             "status": "invalid",
             "reason": f"unexpected dataType '{data_type}'",
