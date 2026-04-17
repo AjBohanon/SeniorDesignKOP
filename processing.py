@@ -95,7 +95,7 @@ def classify_sensor(sensor):
         }
 
     if data_type != "DryContact":
-        if data_type != "TemperatureData"
+        if data_type != "TemperatureData":
             return {
                 "status": "invalid",
                 "reason": f"unexpected dataType '{data_type}'",
