@@ -72,8 +72,8 @@ def parse_dry_contact_state(raw_state):
         return "Closed"
     if raw_state == "False":
         return "Open"
-    if type(raw_state) == float:
-        return raw_state
+    #if type(raw_state) == float:
+    #return raw_state
     return none
 
 
