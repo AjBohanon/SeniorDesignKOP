@@ -29,8 +29,8 @@ REQUIRED_DRY_CONTACT_FIELDS = (
 
 RETAINED_PRODUCTION_DAYS = 8
 PARTITION_PREFIX = "events_p_"
-PRODUCTION_START_TIME = time(7, 0, 0)
-PRODUCTION_END_TIME = time(22, 0, 0)
+PRODUCTION_START_TIME = time(6, 0, 0) # 6 am start time
+PRODUCTION_END_TIME = time(22, 0, 0) # 10pm end time
 PRODUCTION_WEEKDAYS = {0, 1, 2, 3}  # Monday-Thursday
 
 #convert to EST 
