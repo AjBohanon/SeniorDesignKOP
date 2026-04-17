@@ -12,6 +12,10 @@ DRY_CONTACT_NAMES = (
     "Dry Contact - Wrap",
     "Dry Contact - Air Cooled",
     "Dry Contact - Water Cooled",
+    "Freezer Container",
+    "Freezer Main",
+    "Fridge Blend",
+    "Fridge Hall"
 )
 
 REQUIRED_DRY_CONTACT_FIELDS = (
