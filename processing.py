@@ -31,7 +31,7 @@ RETAINED_PRODUCTION_DAYS = 8
 PARTITION_PREFIX = "events_p_"
 PRODUCTION_START_TIME = time(6, 0, 0) # 6 am start time
 PRODUCTION_END_TIME = time(22, 0, 0) # 10pm end time
-PRODUCTION_WEEKDAYS = {0, 1, 2, 3}  # Monday-Thursday
+PRODUCTION_WEEKDAYS = {0, 1, 2, 3, 4}  # Monday-Thursday 4 - Friday, 5 - Saturday, 6 - Sunday
 
 #convert to EST 
 
